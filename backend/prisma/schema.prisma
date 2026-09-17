@@ -1,0 +1,39 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  apiKey    String?
+  plan      String   @default("free")
+  createdAt DateTime @default(now())
+  bots      Bot[]
+}
+
+model Bot {
+  id        String   @id @default(uuid())
+  name      String
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  config    Json
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  trades    Trade[]
+}
+
+model Trade {
+  id         String   @id @default(uuid())
+  botId      String
+  bot        Bot      @relation(fields: [botId], references: [id])
+  symbol     String
+  stake      Float
+  result     String
+  profit     Float
+  executedAt DateTime @default(now())
+}
