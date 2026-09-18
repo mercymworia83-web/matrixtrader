@@ -16,7 +16,7 @@ export default function Dashboard() {
   const [currentPrice, setCurrentPrice] = useState(0);
   const [quantity, setQuantity] = useState(0.001);
   const [orderStatus, setOrderStatus] = useState('');
-  const [orders, setOrders] = useState([]);
+  const [orders, setOrders] = useState<any[]>([]);
 
   useEffect(() => {
     const fetchPrice = async () => {
@@ -32,8 +32,8 @@ export default function Dashboard() {
         const res = await fetch(API_URL + '/binance/balance');
         const data = await res.json();
         if (data.success && data.balances.length > 0) {
-          var usdt = data.balances.find(function(b) { return b.asset === 'USDT'; });
-          var btc = data.balances.find(function(b) { return b.asset === 'BTC'; });
+          var usdt = data.balances.find(function(b: any) { return b.asset === 'USDT'; });
+          var btc = data.balances.find(function(b: any) { return b.asset === 'BTC'; });
           var text = '';
           if (usdt) text += '$' + usdt.free.toFixed(2) + ' USDT';
           if (btc) text += ' | ' + btc.free.toFixed(6) + ' BTC';
@@ -74,7 +74,7 @@ export default function Dashboard() {
     return function cleanup() { clearInterval(timer); };
   }, []);
 
-  const handleTrade = async function(side) {
+  const handleTrade = async function(side: string) {
     if (!isConnected) return;
     setOrderStatus('Processing...');
     try {
@@ -198,7 +198,7 @@ export default function Dashboard() {
                       </tr>
                     </thead>
                     <tbody>
-                      {orders.map(function(order) {
+                      {orders.map(function(order: any) {
                         return (
                           <tr key={order.orderId} className="border-b border-gray-700/50">
                             <td className="py-2 px-2 font-mono text-gray-400">{order.orderId}</td>
