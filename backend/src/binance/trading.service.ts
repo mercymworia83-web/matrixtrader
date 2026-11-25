@@ -10,7 +10,7 @@ export class TradingService implements OnModuleInit, OnModuleDestroy {
   private ordersCache: any[] = [];
 
   constructor() {
-    console.log('TRADING SERVICE LOADED (WebSocket Mode)');
+    console.log('TRADING SERVICE LOADED');
     
     const apiKey = process.env.BINANCE_API_KEY;
     const apiSecret = process.env.BINANCE_SECRET_KEY;
@@ -23,57 +23,90 @@ export class TradingService implements OnModuleInit, OnModuleDestroy {
       apiKey: apiKey.trim(),
       apiSecret: apiSecret.trim(),
       httpBase: 'https://testnet.binance.vision',
-      wsBase: 'wss://testnet.binance.vision',
+      wsBase: 'wss://stream.testnet.binance.vision', // FIXED: Correct testnet WS URL
     });
   }
 
   async onModuleInit() {
-    console.log('Initializing WebSocket connections...');
-    // Start WebSocket for BTCUSDT by default
-    this.startPriceStream('BTCUSDT');
+    console.log('Initializing...');
     
     // Cache balance on startup
     try {
       this.balanceCache = await this.client.accountInfo();
-      console.log('Balance cached successfully');
+      console.log('Balance cached:', JSON.stringify(this.balanceCache.balances.filter((b: any) => parseFloat(b.free) > 0)));
     } catch (err) {
-      console.error('Failed to cache balance:', err);
+      console.error('Failed to cache balance:', err.message);
     }
+
+    // Start WebSocket for BTCUSDT
+    this.startPriceStream('BTCUSDT');
   }
 
   onModuleDestroy() {
-    // Close all WebSocket connections
-    this.wsConnections.forEach((ws) => ws.close());
-    console.log('All WebSocket connections closed');
+    this.wsConnections.forEach((ws) => {
+      if (ws && typeof ws.close === 'function') ws.close();
+    });
+    console.log('WebSocket connections closed');
   }
 
-  // Start a price stream for a symbol
   private startPriceStream(symbol: string) {
     if (this.wsConnections.has(symbol)) return;
 
-    const ws = this.client.ws.ticker(symbol.toLowerCase(), (ticker: any) => {
-      this.latestPrices.set(symbol, parseFloat(ticker.lastPrice));
-    });
+    console.log(`Starting WebSocket for ${symbol}...`);
+    
+    try {
+      const ws = this.client.ws.ticker(symbol.toLowerCase(), (ticker: any) => {
+        const price = parseFloat(ticker.lastPrice || ticker.c);
+        if (price > 0) {
+          this.latestPrices.set(symbol, price);
+          console.log(`📈 ${symbol}: $${price}`);
+        }
+      });
 
-    this.wsConnections.set(symbol, ws);
-    console.log(`WebSocket started for ${symbol}`);
+      this.wsConnections.set(symbol, ws);
+      
+      // Fallback: If no price after 10 seconds, fetch via REST
+      setTimeout(async () => {
+        if (!this.latestPrices.has(symbol) || this.latestPrices.get(symbol) === 0) {
+          console.log(`⚠️ WebSocket slow for ${symbol}, fetching via REST...`);
+          try {
+            const ticker = await this.client.ticker({ symbol });
+            this.latestPrices.set(symbol, parseFloat(ticker.lastPrice));
+          } catch (err) {
+            console.error(`REST fallback failed for ${symbol}:`, err.message);
+          }
+        }
+      }, 10000);
+      
+    } catch (err) {
+      console.error(`WebSocket init failed for ${symbol}:`, err.message);
+    }
   }
 
-  // Get latest price from cache (no API call!)
   async getPrice(symbol: string): Promise<number> {
-    this.startPriceStream(symbol); // Ensure stream is running
+    this.startPriceStream(symbol);
     
-    // Wait up to 5 seconds for first price
+    // Wait up to 15 seconds for WebSocket or REST fallback
     let attempts = 0;
-    while (!this.latestPrices.has(symbol) && attempts < 50) {
+    while (attempts < 150) {
+      const price = this.latestPrices.get(symbol);
+      if (price && price > 0) return price;
       await new Promise(r => setTimeout(r, 100));
       attempts++;
     }
     
-    return this.latestPrices.get(symbol) || 0;
+    // Last resort: direct REST call
+    try {
+      const ticker = await this.client.ticker({ symbol });
+      const price = parseFloat(ticker.lastPrice);
+      this.latestPrices.set(symbol, price);
+      return price;
+    } catch (err) {
+      console.error('All price fetch methods failed:', err.message);
+      return 0;
+    }
   }
 
-  // Get balance from cache (refresh every 5 min)
   async getBalance() {
     if (!this.balanceCache) {
       this.balanceCache = await this.client.accountInfo();
@@ -81,7 +114,6 @@ export class TradingService implements OnModuleInit, OnModuleDestroy {
     return this.balanceCache;
   }
 
-  // Place order (still uses REST, but only when user clicks button)
   async placeOrder(symbol: string, side: 'BUY' | 'SELL', quantity: number) {
     try {
       const order = await this.client.order({
@@ -90,17 +122,14 @@ export class TradingService implements OnModuleInit, OnModuleDestroy {
         type: 'MARKET',
         quantity: quantity.toString(),
       });
-      
-      // Refresh orders cache
       this.ordersCache = await this.client.myOrders({ symbol });
       return order;
     } catch (err) {
-      console.error('Order failed:', err);
+      console.error('Order failed:', err.message);
       throw err;
     }
   }
 
-  // Get orders from cache
   async getOrders(symbol?: string) {
     if (this.ordersCache.length === 0) {
       this.ordersCache = await this.client.myOrders({ symbol: symbol || 'BTCUSDT' });
