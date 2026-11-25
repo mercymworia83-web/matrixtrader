@@ -17,264 +17,240 @@ export default function Dashboard() {
   const [quantity, setQuantity] = useState(0.001);
   const [orderStatus, setOrderStatus] = useState('');
   const [orders, setOrders] = useState<any[]>([]);
+  const [backendWakingUp, setBackendWakingUp] = useState(false);
 
+  // Update time every second
   useEffect(() => {
-    const fetchPrice = async () => {
-      try {
-        const res = await fetch(API_URL + '/binance/price?symbol=' + tradingPair);
-        const data = await res.json();
-        if (data.success) setCurrentPrice(data.price);
-      } catch (e) { console.log('Price fetch failed'); }
-    };
-
-    const fetchBalance = async () => {
-      try {
-        const res = await fetch(API_URL + '/binance/balance');
-        const data = await res.json();
-        if (data.success && data.balances.length > 0) {
-          var usdt = data.balances.find(function(b: any) { return b.asset === 'USDT'; });
-          var btc = data.balances.find(function(b: any) { return b.asset === 'BTC'; });
-          var text = '';
-          if (usdt) text += '$' + usdt.free.toFixed(2) + ' USDT';
-          if (btc) text += ' | ' + btc.free.toFixed(6) + ' BTC';
-          if (!text) text = '$0.00 USDT';
-          setBalance(text);
-        }
-      } catch (e) { console.log('Balance fetch failed'); }
-    };
-
-    const fetchOrders = async () => {
-      try {
-        const res = await fetch(API_URL + '/binance/orders?symbol=' + tradingPair);
-        const data = await res.json();
-        if (data.success) setOrders(data.orders);
-      } catch (e) { console.log('Orders fetch failed'); }
-    };
-
-    fetchPrice();
-    fetchBalance();
-    fetchOrders();
-    const priceInterval = setInterval(fetchPrice, 3000);
-    const balanceInterval = setInterval(fetchBalance, 5000);
-    const ordersInterval = setInterval(fetchOrders, 10000);
-    return function cleanup() {
-      clearInterval(priceInterval);
-      clearInterval(balanceInterval);
-      clearInterval(ordersInterval);
-    };
-  }, [tradingPair]);
-
-  useEffect(function clockEffect() {
-    const updateTime = function() {
+    const timer = setInterval(() => {
       const now = new Date();
-      setCurrentTime(now.toISOString().split('T')[0] + ' ' + now.toLocaleTimeString() + ' GMT');
-    };
-    updateTime();
-    const timer = setInterval(updateTime, 1000);
-    return function cleanup() { clearInterval(timer); };
+      setCurrentTime(now.toLocaleTimeString());
+    }, 1000);
+    return () => clearInterval(timer);
   }, []);
 
-  const handleTrade = async function(side: string) {
-    if (!isConnected) return;
-    setOrderStatus('Processing...');
+  // Wake up backend & fetch initial data
+  useEffect(() => {
+    const initializeData = async () => {
+      setBackendWakingUp(true);
+      
+      try {
+        // 1. WAKE UP RENDER (Free tier spins down)
+        // We use a HEAD request with a long timeout to trigger the spin-up
+        await fetch(`${API_URL}/binance/price?symbol=BTCUSDT`, { 
+          method: 'HEAD',
+          signal: AbortSignal.timeout(120000) // 2 min timeout for Render
+        }).catch(() => console.log('Backend still waking up...'));
+
+        // Small delay to ensure server is fully ready after wake-up
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 2. FETCH BALANCE
+        const balanceRes = await fetch(`${API_URL}/binance/balance`);
+        if (balanceRes.ok) {
+          const data = await balanceRes.json();
+          setBalance(data.balance || '0.00 USDT');
+        } else {
+          setBalance('Error fetching balance');
+        }
+
+        // 3. FETCH LIVE PRICE
+        const priceRes = await fetch(`${API_URL}/binance/price?symbol=${tradingPair}`);
+        if (priceRes.ok) {
+          const data = await priceRes.json();
+          setCurrentPrice(data.price || 0);
+        }
+
+        // 4. FETCH ORDERS
+        const ordersRes = await fetch(`${API_URL}/binance/orders`);
+        if (ordersRes.ok) {
+          const data = await ordersRes.json();
+          setOrders(data.orders || []);
+        }
+
+      } catch (error) {
+        console.error('Initialization failed:', error);
+        setBalance('Connection Timeout');
+        setStatus('BACKEND UNREACHABLE');
+        setIsConnected(false);
+      } finally {
+        setBackendWakingUp(false);
+      }
+    };
+
+    initializeData();
+  }, [tradingPair]); // Re-run if trading pair changes
+
+  const handleBuy = async () => {
+    setOrderStatus('Processing Buy...');
     try {
-      const res = await fetch(API_URL + '/binance/order', {
+      const res = await fetch(`${API_URL}/binance/order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: tradingPair, side: side, quantity: quantity }),
+        body: JSON.stringify({ symbol: tradingPair, side: 'BUY', quantity })
       });
       const data = await res.json();
-      if (data.success) {
-        setOrderStatus('Order Placed! ID: ' + data.orderId);
-        setTimeout(function() { setOrderStatus(''); }, 3000);
-      } else {
-        setOrderStatus('Error: ' + data.message);
-      }
-    } catch (error) {
-      setOrderStatus('Backend Connection Failed');
+      setOrderStatus(data.message || 'Buy Order Placed');
+    } catch (err) {
+      setOrderStatus('Buy Failed: Backend Unreachable');
     }
   };
 
-  const handleRunBot = function() {
-    if (!isConnected) {
-      setStatus('PLEASE CONNECT TO BINANCE FIRST');
-      return;
+  const handleSell = async () => {
+    setOrderStatus('Processing Sell...');
+    try {
+      const res = await fetch(`${API_URL}/binance/order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: tradingPair, side: 'SELL', quantity })
+      });
+      const data = await res.json();
+      setOrderStatus(data.message || 'Sell Order Placed');
+    } catch (err) {
+      setOrderStatus('Sell Failed: Backend Unreachable');
     }
-    if (isRunning) {
-      setIsRunning(false);
-      setStatus('BOT STOPPED');
-      return;
-    }
-    setStatus('BOT STARTING...');
-    setTimeout(function() {
-      setIsRunning(true);
-      setStatus('BOT RUNNING - MONITORING MARKETS');
-    }, 1500);
   };
-  
+
   return (
-    <div className="min-h-screen bg-gray-900 text-white pb-24">
-      <header className="bg-gray-800 border-b border-gray-700 px-4 py-4 flex items-center justify-between sticky top-0 z-30">
-        <h1 className="text-lg font-bold text-green-400">MATRIX TRADER</h1>
+    <div className="min-h-screen bg-[#0b0e11] text-white font-sans">
+      {/* Header */}
+      <header className="flex justify-between items-center p-4 border-b border-gray-800 bg-[#1e2329]">
+        <h1 className="text-2xl font-bold text-[#fcd535] tracking-wider">MATRIX TRADER</h1>
         <div className="flex items-center gap-4">
           <div className="text-right">
             <p className="text-xs text-gray-400">BALANCE</p>
-            <p className="text-sm font-bold text-green-400">{balance}</p>
+            <p className="text-green-500 font-mono">{balance}</p>
           </div>
-          <button
-            onClick={function() {
-              setIsConnected(!isConnected);
-              setStatus(isConnected ? 'DISCONNECTED' : 'CONNECTED TO BINANCE TESTNET');
-            }}
-            className={isConnected ? 'px-4 py-2 rounded-lg font-bold text-sm transition bg-red-600 hover:bg-red-700' : 'px-4 py-2 rounded-lg font-bold text-sm transition bg-green-600 hover:bg-green-700'}
-          >
-            {isConnected ? 'DISCONNECT' : 'CONNECT'}
+          <button className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm font-bold">
+            DISCONNECT
           </button>
         </div>
       </header>
 
-      <nav className="bg-gray-800 border-b border-gray-700 px-4 py-3 flex gap-4 overflow-x-auto scrollbar-hide whitespace-nowrap sticky top-[73px] z-20">
-        {['Dashboard', 'Bot Builder', 'Free Bots', 'Quick Bot', 'SMART AI', 'Manual Trader', 'Copy Trading', 'Charts', 'Analysis Tools', 'Auto Trader', 'Signals'].map(function(item) {
-          return (
-            <Link key={item} href={item === 'Dashboard' ? '/' : '/' + item.toLowerCase().replace(' ', '-')} className="text-xs font-medium text-gray-300 hover:text-white transition">{item}</Link>
-          );
-        })}
+      {/* Navigation */}
+      <nav className="flex gap-6 px-6 py-3 text-sm text-gray-400 border-b border-gray-800 overflow-x-auto">
+        {['Dashboard', 'Bot Builder', 'Free Bots', 'Quick Bot', 'SMART AI', 'Manual Trader', 'Copy Trading', 'Charts', 'Analysis Tools', 'Auto Trader', 'Signals'].map((item) => (
+          <Link key={item} href="#" className="hover:text-white whitespace-nowrap transition-colors">
+            {item}
+          </Link>
+        ))}
       </nav>
 
-      <main className="p-4">
-        <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Main Content */}
+      <main className="p-6 max-w-7xl mx-auto">
+        <h2 className="text-3xl font-bold mb-2">Load or build your bot</h2>
+        <p className="text-gray-400 mb-8">Import a bot, build from scratch, or start with a quick strategy.</p>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           
+          {/* Left Column: Chart & Status */}
           <div className="lg:col-span-2 space-y-6">
-            <div>
-              <h2 className="text-2xl font-bold mb-2">Load or build your bot</h2>
-              <p className="text-gray-400 text-sm">Import a bot, build from scratch, or start with a quick strategy.</p>
+            
+            {/* Chart Container */}
+            <div className="bg-[#1e2329] rounded-lg p-4 border border-gray-800 shadow-xl">
+              <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                LIVE CHART - {tradingPair}
+              </h3>
+              <div className="h-[400px] w-full bg-black rounded overflow-hidden relative">
+                 {/* Placeholder for TradingView Widget - Replace with your actual component */}
+                 <TradingChart symbol={tradingPair} />
+              </div>
             </div>
 
-            <div className="bg-gray-800 rounded-lg border border-gray-700 p-4">
-              <h3 className="text-lg font-bold mb-3">LIVE CHART - {tradingPair}</h3>
-              <TradingChart symbol={tradingPair} />
-            </div>
-
-            <div className="p-4 bg-gray-800 rounded-lg border border-gray-700">
-              <div className="flex justify-between items-start">
+            {/* System Status Panel */}
+            <div className="bg-[#1e2329] rounded-lg p-6 border border-gray-800 flex justify-between items-center">
+              <div>
+                <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">System Status</p>
+                <p className={`font-bold ${isConnected ? 'text-green-500' : 'text-red-500'}`}>
+                  {status}
+                </p>
+                <p className="text-xs text-gray-400 mt-1">Connected to Binance Testnet (Paper Trading)</p>
+              </div>
+              
+              <div className="text-right">
+                <div className="mb-4">
+                   <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Trading Pair</p>
+                   <select 
+                    value={tradingPair} 
+                    onChange={(e) => setTradingPair(e.target.value)}
+                    className="bg-[#2b3139] border border-gray-700 rounded px-3 py-1 text-sm focus:outline-none focus:border-yellow-500"
+                   >
+                     <option value="BTCUSDT">BTC/USDT</option>
+                     <option value="ETHUSDT">ETH/USDT</option>
+                     <option value="SOLUSDT">SOL/USDT</option>
+                   </select>
+                </div>
                 <div>
-                  <p className="text-xs text-gray-400 mb-1">SYSTEM STATUS:</p>
-                  <p className={status.indexOf('CONNECTED') >= 0 ? 'font-mono text-sm text-green-400' : 'font-mono text-sm text-red-400'}>{status}</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs text-gray-400 mb-1">TRADING PAIR:</p>
-                  <select value={tradingPair} onChange={function(e) { setTradingPair(e.target.value); }} className="bg-gray-700 border border-gray-600 rounded px-2 py-1 text-sm text-white">
-                    <option value="BTCUSDT">BTC/USDT</option>
-                    <option value="ETHUSDT">ETH/USDT</option>
-                    <option value="BNBUSDT">BNB/USDT</option>
-                    <option value="SOLUSDT">SOL/USDT</option>
-                  </select>
-                </div>
-              </div>
-              <div className="mt-3 pt-3 border-t border-gray-700 flex justify-between items-center">
-                <p className="text-xs text-gray-500">Connected to Binance Testnet (Paper Trading)</p>
-                <div className="text-right">
-                  <p className="text-xs text-gray-400">LIVE PRICE</p>
-                  <p className="text-xl font-mono font-bold text-white">{currentPrice > 0 ? '$' + currentPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}) : 'Loading...'}</p>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Live Price</p>
+                  <p className="text-2xl font-mono font-bold">
+                    {backendWakingUp ? 'Waking...' : currentPrice > 0 ? `$${currentPrice.toLocaleString()}` : 'Loading...'}
+                  </p>
                 </div>
               </div>
             </div>
 
-            <div className="bg-gray-800 rounded-lg border border-gray-700 p-4">
-              <h3 className="text-lg font-bold mb-3">ORDER HISTORY</h3>
+            {/* Order History Placeholder */}
+            <div className="bg-[#1e2329] rounded-lg p-6 border border-gray-800 min-h-[200px]">
+              <h3 className="text-lg font-bold mb-4">ORDER HISTORY</h3>
               {orders.length === 0 ? (
-                <p className="text-gray-500 text-sm">No orders yet. Place your first trade!</p>
+                <p className="text-gray-500 text-sm italic">No orders yet. Place your first trade!</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-gray-700 text-gray-400">
-                        <th className="text-left py-2 px-2">ID</th>
-                        <th className="text-left py-2 px-2">SIDE</th>
-                        <th className="text-left py-2 px-2">QTY</th>
-                        <th className="text-left py-2 px-2">PRICE</th>
-                        <th className="text-left py-2 px-2">STATUS</th>
-                        <th className="text-left py-2 px-2">TIME</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {orders.map(function(order: any) {
-                        return (
-                          <tr key={order.orderId} className="border-b border-gray-700/50">
-                            <td className="py-2 px-2 font-mono text-gray-400">{order.orderId}</td>
-                            <td className={"py-2 px-2 font-bold " + (order.side === 'BUY' ? 'text-green-400' : 'text-red-400')}>{order.side}</td>
-                            <td className="py-2 px-2 font-mono">{order.executedQty}</td>
-                            <td className="py-2 px-2 font-mono">{order.price > 0 ? '$' + order.price.toFixed(2) : 'Market'}</td>
-                            <td className="py-2 px-2">
-                              <span className={order.status === 'FILLED' ? 'text-green-400' : 'text-yellow-400'}>{order.status}</span>
-                            </td>
-                            <td className="py-2 px-2 text-gray-500">{order.time}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                <ul className="space-y-2">
+                  {orders.map((order, idx) => (
+                    <li key={idx} className="flex justify-between text-sm border-b border-gray-800 pb-2">
+                      <span>{order.side} {order.symbol}</span>
+                      <span className="text-gray-400">{order.qty} @ {order.price}</span>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {[
-                { name: 'Spot Trading', icon: 'S' },
-                { name: 'Futures', icon: 'F' },
-                { name: 'Bot Builder', icon: 'B' },
-                { name: 'AI Signals', icon: 'A' },
-                { name: 'Charts', icon: 'C' },
-                { name: 'Portfolio', icon: 'P' },
-                { name: 'Settings', icon: 'G' },
-                { name: 'Help', icon: 'H' },
-              ].map(function(opt) {
-                return (
-                  <div key={opt.name} className="bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded-xl p-4 flex flex-col items-center gap-2 transition cursor-pointer active:scale-95">
-                    <span className="text-2xl font-bold text-gray-500">{opt.icon}</span>
-                    <span className="text-xs font-medium text-gray-300">{opt.name}</span>
-                  </div>
-                );
-              })}
-            </div>
           </div>
 
-          <div className="bg-gray-800 rounded-xl border border-gray-700 p-6 h-fit sticky top-24">
-            <h3 className="text-lg font-bold mb-4 text-center">MANUAL TRADE</h3>
+          {/* Right Column: Manual Trade */}
+          <div className="bg-[#1e2329] rounded-lg p-6 border border-gray-800 h-fit sticky top-6">
+            <h3 className="text-xl font-bold mb-6 text-center">MANUAL TRADE</h3>
             
             <div className="space-y-4">
               <div>
-                <label className="text-xs text-gray-400 block mb-1">PAIR</label>
-                <div className="bg-gray-900 border border-gray-700 rounded p-2 text-sm font-mono">{tradingPair}</div>
-              </div>
-
-              <div>
-                <label className="text-xs text-gray-400 block mb-1">QUANTITY</label>
+                <label className="block text-xs text-gray-500 mb-1 uppercase">Pair</label>
                 <input 
-                  type="number" 
-                  value={quantity} 
-                  onChange={function(e) { setQuantity(parseFloat(e.target.value)); }}
-                  className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-sm focus:border-green-500 outline-none"
+                  type="text" 
+                  value={tradingPair} 
+                  readOnly 
+                  className="w-full bg-[#2b3139] border border-gray-700 rounded p-3 text-white focus:outline-none"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1 uppercase">Quantity</label>
+                <input 
+                  type="number" 
+                  value={quantity} 
+                  onChange={(e) => setQuantity(parseFloat(e.target.value))}
+                  className="w-full bg-[#2b3139] border border-gray-700 rounded p-3 text-white focus:outline-none focus:border-yellow-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 pt-4">
                 <button 
-                  onClick={function() { handleTrade('BUY'); }}
-                  className="bg-green-600 hover:bg-green-700 py-3 rounded-lg font-bold text-sm transition active:scale-95"
+                  onClick={handleBuy}
+                  disabled={backendWakingUp}
+                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white font-bold py-4 rounded transition-all active:scale-95"
                 >
                   BUY
                 </button>
                 <button 
-                  onClick={function() { handleTrade('SELL'); }}
-                  className="bg-red-600 hover:bg-red-700 py-3 rounded-lg font-bold text-sm transition active:scale-95"
+                  onClick={handleSell}
+                  disabled={backendWakingUp}
+                  className="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-4 rounded transition-all active:scale-95"
                 >
                   SELL
                 </button>
               </div>
 
               {orderStatus && (
-                <div className={orderStatus.indexOf('Placed') >= 0 ? 'p-3 rounded text-xs text-center bg-green-900/30 text-green-400 border border-green-800' : 'p-3 rounded text-xs text-center bg-red-900/30 text-red-400 border border-red-800'}>
+                <div className={`mt-4 p-3 rounded text-center text-sm font-medium ${orderStatus.includes('Failed') ? 'bg-red-900/30 text-red-400' : 'bg-green-900/30 text-green-400'}`}>
                   {orderStatus}
                 </div>
               )}
@@ -284,16 +260,28 @@ export default function Dashboard() {
         </div>
       </main>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-gray-800 border-t border-gray-700 px-4 py-3 flex flex-col md:flex-row items-center justify-between gap-3 z-40 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.3)]">
-        <button className="bg-yellow-600 hover:bg-yellow-700 px-4 py-2 rounded-lg font-semibold text-xs transition w-full md:w-auto">RISK DISCLAIMER</button>
-        <div className="flex items-center gap-2 w-full md:w-auto justify-center">
-          <button onClick={handleRunBot} className={(isRunning ? 'bg-red-600' : 'bg-green-600') + ' hover:opacity-90 px-4 py-2 rounded-lg font-bold text-xs flex items-center gap-2 transition'}>
-            {isRunning ? 'STOP' : 'RUN BOT'}
+      {/* Footer Controls */}
+      <footer className="fixed bottom-0 left-0 right-0 bg-[#1e2329] border-t border-gray-800 p-4 flex justify-between items-center px-8 z-50">
+        <button className="bg-yellow-600 hover:bg-yellow-700 text-black font-bold px-6 py-2 rounded text-sm">
+          RISK DISCLAIMER
+        </button>
+        
+        <div className="flex gap-4">
+          <button 
+            onClick={() => setIsRunning(!isRunning)}
+            className={`px-8 py-2 rounded font-bold transition-all ${isRunning ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}`}
+          >
+            {isRunning ? 'STOP BOT' : 'RUN BOT'}
           </button>
-          <div className="bg-gray-700 px-3 py-2 rounded-lg text-xs text-gray-300 truncate max-w-[150px]">{status}</div>
+          <div className="bg-[#2b3139] px-4 py-2 rounded text-sm text-gray-300 flex items-center">
+             CONNECTED TO BI...
+          </div>
         </div>
-        <div className="text-[10px] text-gray-500 font-mono">{currentTime}</div>
-      </div>
+        
+        <div className="text-xs text-gray-500">
+          {currentTime} GMT
+        </div>
+      </footer>
     </div>
   );
 }
