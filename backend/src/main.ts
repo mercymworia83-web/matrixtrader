@@ -4,10 +4,10 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   
-  // ENABLE CORS FOR VERCEL
+  // ALLOW VERCEL TO ACCESS THIS BACKEND
   app.enableCors({
-    origin: ['https://matrixtrader.vercel.app', 'http://localhost:3000'],
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    origin: true, // Allows ALL origins (safe for testnet/dev)
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
 
