@@ -4,7 +4,8 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import TradingChart from '../components/TradingChart';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
+// HARDCODED PRODUCTION URL - NO MORE GUESSWORK
+const API_URL = 'https://matrixtrader-backend.onrender.com';
 
 export default function Dashboard() {
   const [balance, setBalance] = useState('Loading...');
@@ -29,56 +30,65 @@ export default function Dashboard() {
   }, []);
 
   // Wake up backend & fetch initial data
-  useEffect(() => {
-    const initializeData = async () => {
-      setBackendWakingUp(true);
+  const initializeData = async () => {
+    setBackendWakingUp(true);
+    setStatus('WAKING UP BACKEND...');
+    setIsConnected(false);
+    
+    try {
+      console.log('🚀 Attempting to connect to:', API_URL);
       
-      try {
-        // 1. WAKE UP RENDER (Free tier spins down)
-        // We use a HEAD request with a long timeout to trigger the spin-up
-        await fetch(`${API_URL}/binance/price?symbol=BTCUSDT`, { 
-          method: 'HEAD',
-          signal: AbortSignal.timeout(120000) // 2 min timeout for Render
-        }).catch(() => console.log('Backend still waking up...'));
+      // 1. WAKE UP RENDER (Free tier spins down)
+      await fetch(`${API_URL}/binance/price?symbol=BTCUSDT`, { 
+        method: 'HEAD',
+        signal: AbortSignal.timeout(120000) // 2 min timeout
+      }).catch(() => console.log('Backend still waking up...'));
 
-        // Small delay to ensure server is fully ready after wake-up
-        await new Promise(r => setTimeout(r, 2000));
+      // Small delay to ensure server is fully ready after wake-up
+      await new Promise(r => setTimeout(r, 2000));
 
-        // 2. FETCH BALANCE
-        const balanceRes = await fetch(`${API_URL}/binance/balance`);
-        if (balanceRes.ok) {
-          const data = await balanceRes.json();
-          setBalance(data.balance || '0.00 USDT');
-        } else {
-          setBalance('Error fetching balance');
-        }
-
-        // 3. FETCH LIVE PRICE
-        const priceRes = await fetch(`${API_URL}/binance/price?symbol=${tradingPair}`);
-        if (priceRes.ok) {
-          const data = await priceRes.json();
-          setCurrentPrice(data.price || 0);
-        }
-
-        // 4. FETCH ORDERS
-        const ordersRes = await fetch(`${API_URL}/binance/orders`);
-        if (ordersRes.ok) {
-          const data = await ordersRes.json();
-          setOrders(data.orders || []);
-        }
-
-      } catch (error) {
-        console.error('Initialization failed:', error);
-        setBalance('Connection Timeout');
-        setStatus('BACKEND UNREACHABLE');
-        setIsConnected(false);
-      } finally {
-        setBackendWakingUp(false);
+      // 2. FETCH LIVE PRICE
+      const priceRes = await fetch(`${API_URL}/binance/price?symbol=${tradingPair}`);
+      if (priceRes.ok) {
+        const data = await priceRes.json();
+        console.log('✅ Price received:', data);
+        setCurrentPrice(data.price || 0);
+        setIsConnected(true);
+        setStatus('CONNECTED TO BINANCE TESTNET');
+      } else {
+        throw new Error('Price fetch failed');
       }
-    };
 
+      // 3. FETCH BALANCE
+      const balanceRes = await fetch(`${API_URL}/binance/balance`);
+      if (balanceRes.ok) {
+        const data = await balanceRes.json();
+        // Find USDT balance
+        const usdt = data.balance?.balances?.find((b: any) => b.asset === 'USDT');
+        setBalance(usdt ? `${parseFloat(usdt.free).toFixed(2)} USDT` : '0.00 USDT');
+      }
+
+      // 4. FETCH ORDERS
+      const ordersRes = await fetch(`${API_URL}/binance/orders`);
+      if (ordersRes.ok) {
+        const data = await ordersRes.json();
+        setOrders(data.orders || []);
+      }
+
+    } catch (error) {
+      console.error('❌ Initialization failed:', error);
+      setBalance('Connection Timeout');
+      setStatus('BACKEND UNREACHABLE');
+      setIsConnected(false);
+    } finally {
+      setBackendWakingUp(false);
+    }
+  };
+
+  // Run on mount and when trading pair changes
+  useEffect(() => {
     initializeData();
-  }, [tradingPair]); // Re-run if trading pair changes
+  }, [tradingPair]);
 
   const handleBuy = async () => {
     setOrderStatus('Processing Buy...');
@@ -90,6 +100,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       setOrderStatus(data.message || 'Buy Order Placed');
+      // Refresh balance after order
+      initializeData();
     } catch (err) {
       setOrderStatus('Buy Failed: Backend Unreachable');
     }
@@ -105,6 +117,8 @@ export default function Dashboard() {
       });
       const data = await res.json();
       setOrderStatus(data.message || 'Sell Order Placed');
+      // Refresh balance after order
+      initializeData();
     } catch (err) {
       setOrderStatus('Sell Failed: Backend Unreachable');
     }
@@ -118,9 +132,14 @@ export default function Dashboard() {
         <div className="flex items-center gap-4">
           <div className="text-right">
             <p className="text-xs text-gray-400">BALANCE</p>
-            <p className="text-green-500 font-mono">{balance}</p>
+            <p className={`font-mono ${isConnected ? 'text-green-500' : 'text-red-500'}`}>
+              {backendWakingUp ? 'Waking...' : balance}
+            </p>
           </div>
-          <button className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm font-bold">
+          <button 
+            onClick={() => window.location.reload()}
+            className="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm font-bold"
+          >
             DISCONNECT
           </button>
         </div>
@@ -151,7 +170,6 @@ export default function Dashboard() {
                 LIVE CHART - {tradingPair}
               </h3>
               <div className="h-[400px] w-full bg-black rounded overflow-hidden relative">
-                 {/* Placeholder for TradingView Widget - Replace with your actual component */}
                  <TradingChart symbol={tradingPair} />
               </div>
             </div>
@@ -164,6 +182,16 @@ export default function Dashboard() {
                   {status}
                 </p>
                 <p className="text-xs text-gray-400 mt-1">Connected to Binance Testnet (Paper Trading)</p>
+                
+                {/* RETRY BUTTON FOR WHEN RENDER IS SLEEPING */}
+                {!isConnected && !backendWakingUp && (
+                  <button 
+                    onClick={initializeData}
+                    className="mt-3 bg-blue-600 hover:bg-blue-700 text-white text-xs px-3 py-1 rounded"
+                  >
+                    Retry Connection
+                  </button>
+                )}
               </div>
               
               <div className="text-right">
@@ -235,15 +263,15 @@ export default function Dashboard() {
               <div className="grid grid-cols-2 gap-4 pt-4">
                 <button 
                   onClick={handleBuy}
-                  disabled={backendWakingUp}
-                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 text-white font-bold py-4 rounded transition-all active:scale-95"
+                  disabled={backendWakingUp || !isConnected}
+                  className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-4 rounded transition-all active:scale-95"
                 >
                   BUY
                 </button>
                 <button 
                   onClick={handleSell}
-                  disabled={backendWakingUp}
-                  className="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 text-white font-bold py-4 rounded transition-all active:scale-95"
+                  disabled={backendWakingUp || !isConnected}
+                  className="bg-red-600 hover:bg-red-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-bold py-4 rounded transition-all active:scale-95"
                 >
                   SELL
                 </button>
