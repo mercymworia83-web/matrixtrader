@@ -6,22 +6,26 @@ export class TradingController {
   constructor(private readonly tradingService: TradingService) {}
 
   @Get('price')
-  getPrice(@Query('symbol') symbol: string) {
-    return this.tradingService.getLivePrice(symbol || 'BTCUSDT');
-  }
-
-  @Post('order')
-  createOrder(@Body() body: { symbol: string; side: string; quantity: number }) {
-    return this.tradingService.placeOrder(body.symbol, body.side, body.quantity);
+  async getPrice(@Query('symbol') symbol: string) {
+    const price = await this.tradingService.getPrice(symbol || 'BTCUSDT');
+    return { success: true, price };
   }
 
   @Get('balance')
-  getBalance() {
-    return this.tradingService.getBalance();
+  async getBalance() {
+    const balance = await this.tradingService.getBalance();
+    return { success: true, balance };
+  }
+
+  @Post('order')
+  async placeOrder(@Body() body: { symbol: string; side: 'BUY' | 'SELL'; quantity: number }) {
+    const order = await this.tradingService.placeOrder(body.symbol, body.side, body.quantity);
+    return { success: true, order };
   }
 
   @Get('orders')
-  getOrders(@Query('symbol') symbol: string) {
-    return this.tradingService.getOrders(symbol || 'BTCUSDT');
+  async getOrders(@Query('symbol') symbol: string) {
+    const orders = await this.tradingService.getOrders(symbol);
+    return { success: true, orders };
   }
 }

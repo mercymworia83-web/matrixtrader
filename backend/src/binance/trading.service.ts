@@ -1,24 +1,25 @@
-import { Injectable } from '@nestjs/common';
-import Binance from 'binance-api-node';
+import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import * as binance from 'binance-api-node';
 
 @Injectable()
-export class TradingService {
+export class TradingService implements OnModuleInit, OnModuleDestroy {
   private client: any;
+  private wsConnections: Map<string, any> = new Map();
+  private latestPrices: Map<string, number> = new Map();
+  private balanceCache: any = null;
+  private ordersCache: any[] = [];
 
   constructor() {
-    console.log('TRADING SERVICE LOADED');
+    console.log('TRADING SERVICE LOADED (WebSocket Mode)');
     
-    var apiKey = process.env.BINANCE_API_KEY;
-    var apiSecret = process.env.BINANCE_SECRET_KEY;
+    const apiKey = process.env.BINANCE_API_KEY;
+    const apiSecret = process.env.BINANCE_SECRET_KEY;
     
-    console.log('API Key exists:', !!apiKey);
-    console.log('Secret Key exists:', !!apiSecret);
-
     if (!apiKey || !apiSecret) {
       throw new Error('API keys missing! Check .env file.');
     }
 
-    this.client = Binance({
+    this.client = binance.default({
       apiKey: apiKey.trim(),
       apiSecret: apiSecret.trim(),
       httpBase: 'https://testnet.binance.vision',
@@ -26,72 +27,84 @@ export class TradingService {
     });
   }
 
-  async getLivePrice(symbol: string) {
+  async onModuleInit() {
+    console.log('Initializing WebSocket connections...');
+    // Start WebSocket for BTCUSDT by default
+    this.startPriceStream('BTCUSDT');
+    
+    // Cache balance on startup
     try {
-      var price = await this.client.prices({ symbol: symbol });
-      return { success: true, price: parseFloat(price[symbol]) };
-    } catch (error: any) {
-      return { success: false, message: error.message };
+      this.balanceCache = await this.client.accountInfo();
+      console.log('Balance cached successfully');
+    } catch (err) {
+      console.error('Failed to cache balance:', err);
     }
   }
 
-  async placeOrder(symbol: string, side: string, quantity: number) {
-    try {
-      console.log('Placing order for ' + symbol);
-      var order = await this.client.order({
-        symbol: symbol,
-        side: side,
-        type: 'MARKET',
-        quantity: quantity,
-      });
-      return { success: true, orderId: order.orderId, status: order.status };
-    } catch (error: any) {
-      console.error('Order failed:', error.message);
-      return { success: false, message: error.message };
-    }
+  onModuleDestroy() {
+    // Close all WebSocket connections
+    this.wsConnections.forEach((ws) => ws.close());
+    console.log('All WebSocket connections closed');
   }
 
+  // Start a price stream for a symbol
+  private startPriceStream(symbol: string) {
+    if (this.wsConnections.has(symbol)) return;
+
+    const ws = this.client.ws.ticker(symbol.toLowerCase(), (ticker: any) => {
+      this.latestPrices.set(symbol, parseFloat(ticker.lastPrice));
+    });
+
+    this.wsConnections.set(symbol, ws);
+    console.log(`WebSocket started for ${symbol}`);
+  }
+
+  // Get latest price from cache (no API call!)
+  async getPrice(symbol: string): Promise<number> {
+    this.startPriceStream(symbol); // Ensure stream is running
+    
+    // Wait up to 5 seconds for first price
+    let attempts = 0;
+    while (!this.latestPrices.has(symbol) && attempts < 50) {
+      await new Promise(r => setTimeout(r, 100));
+      attempts++;
+    }
+    
+    return this.latestPrices.get(symbol) || 0;
+  }
+
+  // Get balance from cache (refresh every 5 min)
   async getBalance() {
+    if (!this.balanceCache) {
+      this.balanceCache = await this.client.accountInfo();
+    }
+    return this.balanceCache;
+  }
+
+  // Place order (still uses REST, but only when user clicks button)
+  async placeOrder(symbol: string, side: 'BUY' | 'SELL', quantity: number) {
     try {
-      var accountInfo = await this.client.accountInfo();
-      var balances: any[] = [];
-      for (var i = 0; i < accountInfo.balances.length; i++) {
-        var b = accountInfo.balances[i];
-        if (parseFloat(b.free) > 0 || parseFloat(b.locked) > 0) {
-          balances.push({
-            asset: b.asset,
-            free: parseFloat(b.free),
-            locked: parseFloat(b.locked)
-          });
-        }
-      }
-      return { success: true, balances: balances };
-    } catch (error: any) {
-      return { success: false, message: error.message };
+      const order = await this.client.order({
+        symbol,
+        side,
+        type: 'MARKET',
+        quantity: quantity.toString(),
+      });
+      
+      // Refresh orders cache
+      this.ordersCache = await this.client.myOrders({ symbol });
+      return order;
+    } catch (err) {
+      console.error('Order failed:', err);
+      throw err;
     }
   }
 
-  async getOrders(symbol: string) {
-    try {
-      var orders = await this.client.allOrders({ symbol: symbol, limit: 20 });
-      var result: any[] = [];
-      for (var i = orders.length - 1; i >= 0; i--) {
-        var o = orders[i];
-        result.push({
-          orderId: o.orderId,
-          symbol: o.symbol,
-          side: o.side,
-          type: o.type,
-          quantity: parseFloat(o.origQty),
-          price: parseFloat(o.price),
-          executedQty: parseFloat(o.executedQty),
-          status: o.status,
-          time: new Date(o.time).toLocaleString()
-        });
-      }
-      return { success: true, orders: result };
-    } catch (error: any) {
-      return { success: false, message: error.message };
+  // Get orders from cache
+  async getOrders(symbol?: string) {
+    if (this.ordersCache.length === 0) {
+      this.ordersCache = await this.client.myOrders({ symbol: symbol || 'BTCUSDT' });
     }
+    return this.ordersCache;
   }
 }
